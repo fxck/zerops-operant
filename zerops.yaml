@@ -69,7 +69,7 @@ zerops:
         DATABASE_URL: postgresql://${db_user}:${db_password}@${db_hostname}:${db_port}/${db_dbName}
       # Two named processes in parallel (mutually exclusive with `start`).
       startCommands:
-        - name: control-plane
+        - name: controlplane
           command: node apps/control-plane/dist/src/server.js
         - name: gateway
           command: openclaw gateway run --allow-unconfigured --port 18789 --bind lan --auth token --verbose
