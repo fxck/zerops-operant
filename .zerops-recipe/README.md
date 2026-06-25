@@ -38,16 +38,33 @@ Two topologies ship as one recipe: a single-node **Production** for evaluation a
 - **Bring your own model** — any provider's key, configured from the dashboard; you're not locked to a single vendor.
 <!-- #ZEROPS_EXTRACT_END:features# -->
 
-## First-run setup
+## Take-ownership guide
 
 <!-- #ZEROPS_EXTRACT_START:takeover-guide# -->
-**Sign in to the dashboard.** Open the control-plane service's public subdomain (the `operant` service), then sign in with the `OPERANT_ADMIN_LOGIN_TOKEN` from your environment plus your own Slack member ID (`U…`) or Microsoft Teams AAD user ID. That first signed-in admin becomes the workspace owner. If the token is wrong or missing you can't reach any dashboard view — read it from the `operant` service's env variables.
+### First-run setup
 
-**Walk the Setup tab.** Setup collects everything Operant needs at runtime and stores it encrypted in Postgres — not in env: your Slack app + bot tokens and/or Microsoft Teams app credentials, and your model API key (any provider). Create the Slack app from the bundled `deploy/slack/manifest.yaml` and enable Socket Mode; for Teams, wire an Azure Bot to the OpenClaw `msteams` channel. Either platform stands alone, or run both. Until a platform's credentials are saved, that channel stays disabled and the agent won't respond there.
+1. **Sign in to the dashboard.** Open the `operant` service's public subdomain, then sign in with the `OPERANT_ADMIN_LOGIN_TOKEN` from your environment plus your own Slack member ID (`U…`) or Microsoft Teams AAD user ID. That first signed-in admin becomes the workspace owner. Wrong or missing token → no dashboard view loads; read it from the `operant` service's env variables.
+2. **Walk the Setup tab.** Setup collects everything Operant needs at runtime and stores it encrypted in Postgres (not in env): your Slack app + bot tokens and/or Microsoft Teams app credentials, and your model API key (any provider). Create the Slack app from the bundled `deploy/slack/manifest.yaml` and enable Socket Mode; for Teams, wire an Azure Bot to the OpenClaw `msteams` channel. Either platform stands alone, or run both. Until a platform's credentials are saved, that channel stays disabled and the agent won't respond there.
+3. **Approve the gateway device.** Governed scheduled workflows and secret reloads materialize into the OpenClaw gateway, which needs the control-plane device approved for the operator scopes (`operator.read`, `operator.approvals`, `operator.talk.secrets`). Authoring, RBAC, and audit work without it — only the push into OpenClaw cron needs the pairing; unmaterialized workflows are saved as `error` and re-applied once the device is approved.
+4. **Connect your tools.** Each user opens the Integrations marketplace (or asks the agent for a connect link) and OAuths their own SaaS accounts via Pipedream Connect; tool calls then run under that person's connection. Set the project `PIPEDREAM_PROJECT_*` + `OPERANT_MCP_SOURCE_PIPEDREAM_URL` vars to enable this — leave them unset to run with built-in tools only.
 
-**Approve the gateway device for scheduled workflows.** Governed scheduled workflows and secret reloads materialize into the OpenClaw gateway, which requires the control-plane device to be approved for the gateway's operator scopes (`operator.read`, `operator.approvals`, `operator.talk.secrets`). Workflow authoring, RBAC, and audit all work without it — only the push into OpenClaw cron needs the pairing, and unmaterialized workflows are saved as `error` and re-applied once the device is approved.
+### Data, backups, and your encryption key
 
-**Connect your tools.** Once a platform is live, each user opens the Integrations marketplace (or asks the agent in chat for a connect link) and OAuths their own SaaS accounts via Pipedream Connect. Tool calls then run under that person's connection. Pipedream is configured by setting the project OAuth client env vars; with them unset, the agent still runs but only the built-in tools register.
+All durable state — workspaces, roles, encrypted credentials, audit/usage, memory, skills, and workflow definitions — lives in the managed `db` Postgres; the container filesystem holds only the regenerable `openclaw.json`. So **Postgres is the whole backup story**: enable scheduled backups on the `db` service and run one test restore.
+
+**Keep `OPERANT_SECRET_KEY` safe and unchanged.** It's the AES-256-GCM key for every stored credential, so a database backup restored *without the exact same key* is undecryptable — the Slack/Teams tokens and model keys inside it become unreadable. Back the key up independently of the database, and never rotate it casually: rotating invalidates all existing encrypted data and sessions.
+
+### Your domain
+
+The `operant` control-plane subdomain is your dashboard and the **only** public surface. Add a custom domain under the project's Public Access settings and point its DNS at Zerops; the generated subdomain keeps working until you do. Slack runs over Socket Mode (no inbound URL needed); Microsoft Teams is the exception — point its Azure Bot messaging endpoint at the gateway's Teams webhook so inbound activity reaches it.
+
+### Upgrade
+
+The `operant` and `dockerhost` services build from a pinned ref of this recipe repo (`buildFromGit`). To upgrade, bump that ref and redeploy — **don't track a moving branch in production.** The control-plane process runs all SQL migrations transactionally on boot, so a new schema applies itself; a failing migration fails readiness (`/readyz`) and Zerops keeps the previous container serving until the new one is healthy. Roll a non-production copy first and watch the deploy through to ready.
+
+### Scale
+
+The `operant` service is a **singleton** (`maxContainers: 1`) — the gateway owns a single Slack Socket Mode connection plus OpenClaw's session and cron state, and **cannot be replicated.** Scale it **vertically** (more RAM/CPU); never add containers — a second instance would double-consume the Slack connection and split session state. For more concurrent agent work, scale the `dockerhost` instead (it runs each tool call in its own throwaway sandbox). Postgres is single-node in Production; step up to **HA Production** for the 3-node cluster when data durability matters — the app topology is identical either way.
 <!-- #ZEROPS_EXTRACT_END:takeover-guide# -->
 
 ## Knowledge base
