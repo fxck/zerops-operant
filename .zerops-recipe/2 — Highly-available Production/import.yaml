@@ -10,6 +10,8 @@
 project:
   name: operant
   corePackage: SERIOUS
+  # Shared secrets — both operant and gateway need the identical value, so they live
+  # at project level (one value inherited by every service), generated once at import.
   envVariables:
     OPERANT_INTERNAL_TOKEN: <@generateRandomString(<48>)>
     OPENCLAW_GATEWAY_TOKEN: <@generateRandomString(<48>)>
