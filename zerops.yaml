@@ -46,18 +46,20 @@ zerops:
         # control-plane process writes the config to the same local /operant/openclaw.
         - sh /var/www/operant/utils/run-init.sh
       ports:
-        - port: 8080      # control plane — public subdomain (dashboard + API)
+        - port: 8080      # control plane / dashboard — PUBLIC (this subdomain is the dashboard URL)
           httpSupport: true
-        - port: 18789     # OpenClaw gateway — internal
-          httpSupport: true
-        - port: 3978      # Teams webhook — internal
-          httpSupport: true
+        - port: 18789     # OpenClaw gateway API — INTERNAL only. httpSupport:false = private
+          httpSupport: false   # network (no public subdomain); control plane reaches it at operant:18789
+        - port: 3978      # Teams webhook — PUBLIC only for Microsoft Teams (Azure Bot posts here).
+          httpSupport: true    # Set httpSupport:false for Slack-only deployments.
       envVariables:
         OPERANT_HOST: 0.0.0.0
         OPERANT_PORT: "8080"
-        # Both processes are in this container, so the cross-process wiring is loopback.
-        OPERANT_CONTROL_PLANE_URL: http://localhost:8080
-        OPENCLAW_GATEWAY_URL: http://localhost:18789
+        # Both processes share this container, but the gateway binds the LAN interface
+        # (--bind lan), not 127.0.0.1 — so they reach each other via the service hostname
+        # on the private network, not localhost.
+        OPERANT_CONTROL_PLANE_URL: http://operant:8080
+        OPENCLAW_GATEWAY_URL: http://operant:18789
         OPENCLAW_CONFIG_PATH: /operant/openclaw/openclaw.json   # written by CP, read by gateway — same disk
         OPENCLAW_STATE_DIR: /var/www/.openclaw-state
         OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: "1"
