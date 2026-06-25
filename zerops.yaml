@@ -1,15 +1,17 @@
 # Operant — Zerops recipe lifecycle (build + run per service).
 #
-# This repo is NOT a fork of the Operant source. Each service's build clones a pinned
-# revision of github.com/tomascupr/operant (see the utils/build.sh scripts), builds the
-# relevant workspace package, and ships it. The source is a build input, never edited.
+# This repo is NOT a fork of the Operant source. The build clones a pinned revision of
+# github.com/tomascupr/operant (see operant/utils/build.sh) and ships it. Source is a
+# build input, never edited. Upgrade = bump OPERANT_REF in the utils/build.sh script.
 #
-# The long prepare/init/build logic lives in <service-folder>/utils/*.sh — this file
-# just wires those scripts into the Zerops lifecycle. Three setup blocks matched to
-# service hostnames: operant, gateway, dockerhost. (db is a managed PostgreSQL.)
+# The control plane and the OpenClaw gateway run as TWO PROCESSES in ONE service
+# (run.startCommands), so they share a filesystem: the control plane writes
+# /operant/openclaw/openclaw.json and the gateway reads it from the same path — no
+# cross-container config delivery needed (this is v0.6.0's shared-volume model,
+# collapsed into one container). Long lifecycle logic lives in operant/utils/*.sh.
 
 zerops:
-  # ── Control plane: HTTP API + static admin dashboard ──────────────────────
+  # ── Operant: control plane + OpenClaw gateway (two processes, one container) ─
   - setup: operant
     build:
       base: nodejs@24
@@ -17,10 +19,16 @@ zerops:
       prepareCommands:
         - sudo apk add --no-cache git   # needed to clone the Operant source
       buildCommands:
+        # One clone builds BOTH workspace packages and packs all three OpenClaw plugins.
         - sh operant/utils/build.sh
       deployFiles:
-        # Ship the built clone to /var/www (tilde strips the src/ prefix).
+        # The whole built clone: control-plane dist + node_modules to RUN, and
+        # deploy/openclaw/* the gateway init needs. (tilde strips the src/ prefix.)
         - src/~
+        - operant/utils    # → /var/www/operant/utils/run-init.sh
+      addToRunPrepare:
+        # Three plugin tarballs + run-prepare.sh → /home/zerops/plugins.
+        - plugins
       cache:
         - .pnpm-store
     deploy:
@@ -31,82 +39,53 @@ zerops:
     run:
       base: nodejs@24
       os: alpine
+      prepareCommands:
+        - sh /home/zerops/plugins/run-prepare.sh
       initCommands:
-        # /operant/openclaw is the trustedDir OpenClaw's generated config hardcodes;
-        # the control plane writes config there. (One line — kept inline.)
-        - sudo mkdir -p /operant/openclaw && sudo chown zerops:zerops /operant/openclaw
+        # Resolver wrapper, sandbox image, plugin install. NO config fetch — the
+        # control-plane process writes the config to the same local /operant/openclaw.
+        - sh /var/www/operant/utils/run-init.sh
       ports:
-        - port: 8080
+        - port: 8080      # control plane — public subdomain (dashboard + API)
+          httpSupport: true
+        - port: 18789     # OpenClaw gateway — internal
+          httpSupport: true
+        - port: 3978      # Teams webhook — internal
           httpSupport: true
       envVariables:
         OPERANT_HOST: 0.0.0.0
         OPERANT_PORT: "8080"
-        OPENCLAW_GATEWAY_URL: http://gateway:18789
-        OPENCLAW_CONFIG_PATH: /operant/openclaw/openclaw.json
+        # Both processes are in this container, so the cross-process wiring is loopback.
+        OPERANT_CONTROL_PLANE_URL: http://localhost:8080
+        OPENCLAW_GATEWAY_URL: http://localhost:18789
+        OPENCLAW_CONFIG_PATH: /operant/openclaw/openclaw.json   # written by CP, read by gateway — same disk
+        OPENCLAW_STATE_DIR: /var/www/.openclaw-state
+        OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: "1"
+        OPERANT_OPENCLAW_SANDBOX_MODE: docker
+        # Remote Docker daemon on dockerhost over mutual TLS.
+        DOCKER_HOST: tcp://dockerhost.zerops:2376
+        DOCKER_TLS_VERIFY: "1"
+        DOCKER_CERT_PATH: /var/www/.docker-certs
         DATABASE_URL: postgresql://${db_user}:${db_password}@${db_hostname}:${db_port}/${db_dbName}
-      start: node apps/control-plane/dist/src/server.js
+      # Two named processes in parallel (mutually exclusive with `start`).
+      startCommands:
+        - name: control-plane
+          command: node apps/control-plane/dist/src/server.js
+        - name: gateway
+          command: openclaw gateway run --allow-unconfigured --port 18789 --bind lan --auth token --verbose
       healthCheck:
         httpGet:
           port: 8080
           path: /healthz
-
-  # ── OpenClaw gateway: Slack/Teams ingress, sessions, tool execution ───────
-  - setup: gateway
-    build:
-      base: nodejs@24
-      os: alpine
-      prepareCommands:
-        - sudo apk add --no-cache git
-      buildCommands:
-        # Clones + builds the Operant plugin and packs all three OpenClaw plugins
-        # (operant + slack + msteams) into plugins/.
-        - sh openclaw-gateway/utils/build.sh
-      deployFiles:
-        - src/~                     # the built Operant clone (provides deploy/openclaw/*)
-        - openclaw-gateway/utils    # → /var/www/openclaw-gateway/utils/run-init.sh
-      addToRunPrepare:
-        # Ships the three plugin tarballs + run-prepare.sh to /home/zerops/plugins.
-        - plugins
-      cache:
-        - .pnpm-store
-    run:
-      base: nodejs@24
-      os: alpine
-      prepareCommands:
-        - sh /home/zerops/plugins/run-prepare.sh
-      initCommands:
-        - sh /var/www/openclaw-gateway/utils/run-init.sh
-      ports:
-        - port: 18789
-          httpSupport: true
-        - port: 3978
-          httpSupport: true
-      envVariables:
-        OPERANT_CONTROL_PLANE_URL: http://operant:8080
-        OPENCLAW_CONFIG_PATH: /operant/openclaw/openclaw.json
-        OPENCLAW_STATE_DIR: /var/www/.openclaw-state
-        OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: "1"
-        OPERANT_OPENCLAW_SANDBOX_MODE: docker
-        # Remote Docker daemon on dockerhost over mutual TLS. FQDN dockerhost.zerops
-        # matches the daemon cert SAN.
-        DOCKER_HOST: tcp://dockerhost.zerops:2376
-        DOCKER_TLS_VERIFY: "1"
-        DOCKER_CERT_PATH: /var/www/.docker-certs
-      start: openclaw gateway run --allow-unconfigured --port 18789 --bind lan --auth token --verbose
 
   # ── Docker host: runs each agent tool call in an isolated sandbox container ─
   - setup: dockerhost
     build:
       base: alpine@3.21
       deployFiles:
-        # daemon.json lives in dockerhost/; tilde drops the folder prefix so it lands
-        # at /var/www/daemon.json.
-        - dockerhost/~
+        - dockerhost/~   # → /var/www/daemon.json
     run:
       base: docker@26.1.5
-      # initCommands run on every VM start — re-applies the mutual-TLS dockerd config
-      # (TCP :2376 with the Zerops zembed certs) so it survives VM replacement. (Short
-      # — kept inline.)
       initCommands:
         - sudo mkdir -p /etc/docker
         - sudo cp /var/www/daemon.json /etc/docker/daemon.json

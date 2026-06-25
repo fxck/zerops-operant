@@ -6,7 +6,7 @@ See the [root README](../README.md) · source: **[github.com/tomascupr/operant](
 
 - **Name:** <!-- #ZEROPS_EXTRACT_START:name# -->Operant<!-- #ZEROPS_EXTRACT_END:name# -->
 - **Shape:** <!-- #ZEROPS_EXTRACT_START:shape# -->software<!-- #ZEROPS_EXTRACT_END:shape# --> — you run and operate it, you don't fork its source
-- **Environments:** `Production` · `HA Production` — single-node for evaluation and steady traffic, up to an HA Postgres cluster with a scaled-out control plane
+- **Environments:** `Production` · `HA Production` — single-node for evaluation and steady traffic, or a 3-node HA Postgres cluster for data durability (the app is a singleton either way)
 
 ## Tagline
 
@@ -21,7 +21,7 @@ Operant puts a governed AI agent in your Slack and Microsoft Teams channels and 
 
 It wraps [OpenClaw](https://docs.openclaw.ai) — a permissively-licensed agent runtime that owns chat ingress, sessions, the browser/cloud-computer, and tool execution — and adds the enterprise control plane around it: BYOK credentials encrypted AES-256-GCM in your own Postgres, six built-in roles plus arbitrary `(action, resource)` grants, named-approver gates for risky work, full audit/usage/cost tracking, retention export and wipe, governed team memory and skills, governed scheduled workflows, and a strict-CSP admin dashboard. Slack and Teams are dual-identity: one person carries one policy and audit trail across both. Bring your own model key — any provider, not just one vendor.
 
-Two topologies ship as one recipe: a single-node **Production** for evaluation and steady traffic, and a **Highly-available Production** with a 3-node Postgres cluster and a control plane scaled out behind the load balancer. Both run the whole stack natively on Zerops — the control plane serving the dashboard and API, a managed PostgreSQL for all state, the OpenClaw gateway, and a dedicated Docker host that runs every agent tool call in an isolated, throwaway sandbox container.
+Two topologies ship as one recipe: a single-node **Production** for evaluation and steady traffic, and a **Highly-available Production** with a 3-node Postgres cluster for data durability. Both run the whole stack natively on Zerops — one Operant service (the control plane and the OpenClaw gateway run as two processes in a single container, sharing a filesystem), a managed PostgreSQL for all state, and a dedicated Docker host that runs every agent tool call in an isolated, throwaway sandbox container.
 <!-- #ZEROPS_EXTRACT_END:description# -->
 
 ## Features
@@ -55,12 +55,15 @@ Two topologies ship as one recipe: a single-node **Production** for evaluation a
 <!-- #ZEROPS_EXTRACT_START:knowledge-base# -->
 ### Architecture
 
-This recipe deploys Operant as four cooperating Zerops services — `operant` + `gateway` build from one source repo (a pinned Operant clone), `db` is managed, and `dockerhost` is a Docker host:
+This recipe deploys Operant as three Zerops services — `operant` (built from a pinned Operant clone), managed `db`, and a `dockerhost`:
 
-- **`operant` (control plane, Node.js)** — the entire HTTP API and the static admin dashboard, served from one process on port `8080`. Exposes `/healthz`/`/readyz`, runs all SQL migrations transactionally on boot, encrypts BYOK credentials, and enforces RBAC, policy, approvals, audit, and retention. This is the only public service; its subdomain is your dashboard URL.
-- **`gateway` (OpenClaw, Node.js)** — owns chat ingress for Slack (Socket Mode) and Teams (Azure Bot webhook), agent sessions, and tool execution. On boot it fetches its generated config from the control plane over the private network and resolves Operant-held secrets at runtime over HTTP. Built from the same repo as `operant` (it bundles the Operant OpenClaw plugin). Internal only; not publicly exposed. Runs as a singleton — it owns OpenClaw's session/cron state.
+- **`operant` (Node.js)** — runs two processes in one container:
+  - **control plane** (port `8080`) — the entire HTTP API and the static admin dashboard. Exposes `/healthz`/`/readyz`, runs all SQL migrations transactionally on boot, encrypts BYOK credentials, and enforces RBAC, policy, approvals, audit, and retention. Its subdomain is your dashboard URL (the only public surface).
+  - **OpenClaw gateway** (port `18789`, Teams webhook `3978`) — chat ingress for Slack (Socket Mode) and Teams (Azure Bot webhook), agent sessions, and tool execution.
+
+  They share the container's filesystem, so the control plane writes the generated `openclaw.json` to `/operant/openclaw/` and the gateway reads it from the same path — no cross-container config handoff. The service is a **singleton** (`maxContainers: 1`): the gateway owns one Slack connection plus OpenClaw's session/cron state and can't be replicated. Scale it vertically.
 - **`db` (managed PostgreSQL)** — the single source of truth for all state: workspaces, roles, encrypted credentials, audit/usage rows, memory, skills, and scheduled-workflow definitions. Single-node in Production, a 3-node HA cluster in HA Production.
-- **`dockerhost` (Docker host)** — a dedicated Docker daemon exposed to the gateway over mutual-TLS on the private network. The gateway runs each agent tool call in an isolated `openclaw-sandbox` container here (`OPERANT_OPENCLAW_SANDBOX_MODE=docker`), keeping tool execution off the gateway itself.
+- **`dockerhost` (Docker host)** — a dedicated Docker daemon exposed to the `operant` service over mutual-TLS on the private network. The gateway process runs each agent tool call in an isolated `openclaw-sandbox` container here (`OPERANT_OPENCLAW_SANDBOX_MODE=docker`), keeping tool execution off the gateway itself.
 
 The control plane **observes** OpenClaw sessions/tasks and **authors** governed workflows it materializes into OpenClaw cron — it owns the definition, RBAC, and audit while OpenClaw stays the executor.
 
@@ -69,8 +72,8 @@ The control plane **observes** OpenClaw sessions/tasks and **authors** governed 
 Auto-wired by the recipe (don't change unless you know why):
 
 - `DATABASE_URL` — composed from the managed `db` service connection variables.
-- `OPENCLAW_GATEWAY_URL` / `OPERANT_CONTROL_PLANE_URL` — the private `operant` ⇄ `gateway` addresses on the project network.
-- `OPENCLAW_CONFIG_PATH` — the local path the gateway writes after fetching its config from the control plane over HTTP.
+- `OPENCLAW_GATEWAY_URL` / `OPERANT_CONTROL_PLANE_URL` — loopback (`http://localhost:…`); the two processes talk over localhost inside the one container.
+- `OPENCLAW_CONFIG_PATH` — the shared on-disk path (`/operant/openclaw/openclaw.json`); the control-plane process writes it, the gateway process reads it — same container, same disk.
 - `OPERANT_HOST` / `OPERANT_PORT` — bind address and port (`0.0.0.0:8080`).
 
 Generated once at import (random secrets; rotating them invalidates existing sessions/encrypted data):

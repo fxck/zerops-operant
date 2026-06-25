@@ -1,8 +1,7 @@
 <!-- #ZEROPS_EXTRACT_START:intro# -->
-Run Operant for higher availability: a 3-node Postgres HA cluster and a control plane
-scaled across multiple containers behind the load balancer. The OpenClaw gateway and
-the sandbox Docker host stay single-node by design — the gateway owns OpenClaw's
-session and cron state, and the Docker host is a fixed-resource VM — so this tier
-hardens the data and dashboard layers, not chat ingress itself. Requires the Serious
-project plan.
+Run Operant against a 3-node Postgres HA cluster for data durability, with the Operant
+service on dedicated CPU. Note: the Operant service itself stays single-node by design —
+its gateway process owns one Slack connection and OpenClaw's session/cron state, so it
+can't be replicated. This tier hardens your data layer and gives the app more headroom;
+it doesn't make the app itself redundant. Requires the Serious project plan.
 <!-- #ZEROPS_EXTRACT_END:intro# -->
