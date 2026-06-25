@@ -1,0 +1,56 @@
+#zeropsPreprocessor=on
+
+# Highly-available Production — Postgres HA cluster (3 nodes) and a control plane
+# scaled out behind the load balancer. The gateway and Docker host remain single-node
+# by design (see comments). Requires the Serious project plan for multi-container HA.
+#
+# buildFromGit points at THIS recipe repo (holding zerops.yaml), not the Operant
+# source repo. If you fork, update the URLs below.
+
+project:
+  name: operant
+  corePackage: SERIOUS
+  envVariables:
+    OPERANT_INTERNAL_TOKEN: <@generateRandomString(<48>)>
+    OPENCLAW_GATEWAY_TOKEN: <@generateRandomString(<48>)>
+  tags:
+    - operant
+    - ai-agents
+    - slack
+    - msteams
+
+services:
+  # ---- state: 3-node HA Postgres cluster ----
+  - hostname: db
+    type: postgresql:ha@16
+    priority: 10
+    profile: oltp-staging        # HA tier; escalate to oltp-production under load
+
+  # ---- control plane: scaled across containers (stateless; regenerates config per request) ----
+  - hostname: operant
+    type: nodejs@24
+    priority: 5
+    buildFromGit: https://github.com/fxck/zerops-operant
+    zeropsSetup: operant
+    enableSubdomainAccess: true
+    minContainers: 2             # ≥2 for crash tolerance; migrations are transactional + idempotent
+    maxContainers: 4
+    envSecrets:
+      OPERANT_SECRET_KEY: <@generateRandomString(<32>)>
+      OPERANT_ADMIN_LOGIN_TOKEN: <@generateRandomString(<32>)>
+
+  # ---- OpenClaw gateway: SINGLETON — owns OpenClaw state/sessions/cron, cannot scale out ----
+  - hostname: gateway
+    type: nodejs@24
+    priority: 5
+    buildFromGit: https://github.com/fxck/zerops-operant
+    zeropsSetup: gateway
+    minContainers: 1
+    maxContainers: 1
+
+  # ---- Docker host: docker type is fixed-resource, single VM (no HA) ----
+  - hostname: dockerhost
+    type: docker@26.1.5
+    priority: 5
+    buildFromGit: https://github.com/fxck/zerops-operant
+    zeropsSetup: dockerhost

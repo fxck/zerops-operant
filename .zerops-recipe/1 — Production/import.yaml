@@ -1,0 +1,59 @@
+#zeropsPreprocessor=on
+
+# Production (single-node) — managed Postgres plus the three Operant services each on
+# one container. Cheapest way to run Operant for real; no redundancy. Matches the
+# validated reference deployment.
+#
+# buildFromGit points at THIS recipe repo (holding zerops.yaml), not the Operant
+# source repo. If you fork, update the URLs below.
+
+project:
+  name: operant
+  corePackage: LIGHT
+  # Shared secrets — identical across operant + gateway, so project-level (inherited
+  # by every service), generated once at import.
+  envVariables:
+    OPERANT_INTERNAL_TOKEN: <@generateRandomString(<48>)>
+    OPENCLAW_GATEWAY_TOKEN: <@generateRandomString(<48>)>
+  tags:
+    - operant
+    - ai-agents
+    - slack
+    - msteams
+
+services:
+  # ---- state (starts first) ----
+  - hostname: db
+    type: postgresql:single@16   # validated on 16; 17/18 also available
+    priority: 10
+    profile: oltp-hobby          # conservative; escalate under load
+
+  # ---- control plane: dashboard + API (the only public service) ----
+  - hostname: operant
+    type: nodejs@24
+    priority: 5
+    buildFromGit: https://github.com/fxck/zerops-operant
+    zeropsSetup: operant
+    enableSubdomainAccess: true  # this subdomain is the dashboard URL
+    minContainers: 1
+    maxContainers: 1
+    envSecrets:
+      # control-plane only (owns DB + credential encryption). 32 ASCII chars = 32 bytes.
+      OPERANT_SECRET_KEY: <@generateRandomString(<32>)>
+      OPERANT_ADMIN_LOGIN_TOKEN: <@generateRandomString(<32>)>
+
+  # ---- OpenClaw gateway: chat ingress + tool execution (internal, singleton) ----
+  - hostname: gateway
+    type: nodejs@24
+    priority: 5
+    buildFromGit: https://github.com/fxck/zerops-operant
+    zeropsSetup: gateway
+    minContainers: 1
+    maxContainers: 1             # owns OpenClaw state/sessions/cron — never scale out
+
+  # ---- Docker host: isolated sandbox for agent tool calls ----
+  - hostname: dockerhost
+    type: docker@26.1.5
+    priority: 5
+    buildFromGit: https://github.com/fxck/zerops-operant
+    zeropsSetup: dockerhost

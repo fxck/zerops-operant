@@ -1,0 +1,1 @@
+{"hosts":["unix:///var/run/docker.sock","tcp://0.0.0.0:2376"],"tls":true,"tlsverify":true,"tlscacert":"/etc/zerops-zembed/ca.crt","tlscert":"/etc/zerops-zembed/cert.crt","tlskey":"/etc/zerops-zembed/cert.key"}

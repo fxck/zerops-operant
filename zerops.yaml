@@ -1,0 +1,114 @@
+# Operant — Zerops recipe lifecycle (build + run per service).
+#
+# This repo is NOT a fork of the Operant source. Each service's build clones a pinned
+# revision of github.com/tomascupr/operant (see the utils/build.sh scripts), builds the
+# relevant workspace package, and ships it. The source is a build input, never edited.
+#
+# The long prepare/init/build logic lives in <service-folder>/utils/*.sh — this file
+# just wires those scripts into the Zerops lifecycle. Three setup blocks matched to
+# service hostnames: operant, gateway, dockerhost. (db is a managed PostgreSQL.)
+
+zerops:
+  # ── Control plane: HTTP API + static admin dashboard ──────────────────────
+  - setup: operant
+    build:
+      base: nodejs@24
+      os: alpine
+      prepareCommands:
+        - sudo apk add --no-cache git   # needed to clone the Operant source
+      buildCommands:
+        - sh operant/utils/build.sh
+      deployFiles:
+        # Ship the built clone to /var/www (tilde strips the src/ prefix).
+        - src/~
+      cache:
+        - .pnpm-store
+    deploy:
+      readinessCheck:
+        httpGet:
+          port: 8080
+          path: /healthz
+    run:
+      base: nodejs@24
+      os: alpine
+      initCommands:
+        # /operant/openclaw is the trustedDir OpenClaw's generated config hardcodes;
+        # the control plane writes config there. (One line — kept inline.)
+        - sudo mkdir -p /operant/openclaw && sudo chown zerops:zerops /operant/openclaw
+      ports:
+        - port: 8080
+          httpSupport: true
+      envVariables:
+        OPERANT_HOST: 0.0.0.0
+        OPERANT_PORT: "8080"
+        OPENCLAW_GATEWAY_URL: http://gateway:18789
+        OPENCLAW_CONFIG_PATH: /operant/openclaw/openclaw.json
+        DATABASE_URL: postgresql://${db_user}:${db_password}@${db_hostname}:${db_port}/${db_dbName}
+      start: node apps/control-plane/dist/src/server.js
+      healthCheck:
+        httpGet:
+          port: 8080
+          path: /healthz
+
+  # ── OpenClaw gateway: Slack/Teams ingress, sessions, tool execution ───────
+  - setup: gateway
+    build:
+      base: nodejs@24
+      os: alpine
+      prepareCommands:
+        - sudo apk add --no-cache git
+      buildCommands:
+        # Clones + builds the Operant plugin and packs all three OpenClaw plugins
+        # (operant + slack + msteams) into plugins/.
+        - sh openclaw-gateway/utils/build.sh
+      deployFiles:
+        - src/~                     # the built Operant clone (provides deploy/openclaw/*)
+        - openclaw-gateway/utils    # → /var/www/openclaw-gateway/utils/run-init.sh
+      addToRunPrepare:
+        # Ships the three plugin tarballs + run-prepare.sh to /home/zerops/plugins.
+        - plugins
+      cache:
+        - .pnpm-store
+    run:
+      base: nodejs@24
+      os: alpine
+      prepareCommands:
+        - sh /home/zerops/plugins/run-prepare.sh
+      initCommands:
+        - sh /var/www/openclaw-gateway/utils/run-init.sh
+      ports:
+        - port: 18789
+          httpSupport: true
+        - port: 3978
+          httpSupport: true
+      envVariables:
+        OPERANT_CONTROL_PLANE_URL: http://operant:8080
+        OPENCLAW_CONFIG_PATH: /operant/openclaw/openclaw.json
+        OPENCLAW_STATE_DIR: /var/www/.openclaw-state
+        OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: "1"
+        OPERANT_OPENCLAW_SANDBOX_MODE: docker
+        # Remote Docker daemon on dockerhost over mutual TLS. FQDN dockerhost.zerops
+        # matches the daemon cert SAN.
+        DOCKER_HOST: tcp://dockerhost.zerops:2376
+        DOCKER_TLS_VERIFY: "1"
+        DOCKER_CERT_PATH: /var/www/.docker-certs
+      start: openclaw gateway run --allow-unconfigured --port 18789 --bind lan --auth token --verbose
+
+  # ── Docker host: runs each agent tool call in an isolated sandbox container ─
+  - setup: dockerhost
+    build:
+      base: alpine@3.21
+      deployFiles:
+        # daemon.json lives in dockerhost/; tilde drops the folder prefix so it lands
+        # at /var/www/daemon.json.
+        - dockerhost/~
+    run:
+      base: docker@26.1.5
+      # initCommands run on every VM start — re-applies the mutual-TLS dockerd config
+      # (TCP :2376 with the Zerops zembed certs) so it survives VM replacement. (Short
+      # — kept inline.)
+      initCommands:
+        - sudo mkdir -p /etc/docker
+        - sudo cp /var/www/daemon.json /etc/docker/daemon.json
+        - sudo rc-service docker restart
+      start: sleep infinity
