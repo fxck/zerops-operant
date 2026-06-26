@@ -15,11 +15,6 @@ project:
   envVariables:
     OPERANT_INTERNAL_TOKEN: <@generateRandomString(<48>)>
     OPENCLAW_GATEWAY_TOKEN: <@generateRandomString(<48>)>
-  tags:
-    - operant
-    - ai-agents
-    - slack
-    - msteams
 
 services:
   # ---- state: 3-node HA Postgres cluster (the actual HA win of this tier) ----
