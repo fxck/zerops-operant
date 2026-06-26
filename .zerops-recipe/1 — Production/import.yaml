@@ -9,17 +9,11 @@
 
 project:
   name: operant
-  corePackage: LIGHT
   # Shared secrets — the control-plane and gateway processes both read the identical
   # value, so they live at project level (inherited by every service), generated once.
   envVariables:
     OPERANT_INTERNAL_TOKEN: <@generateRandomString(<48>)>
     OPENCLAW_GATEWAY_TOKEN: <@generateRandomString(<48>)>
-  tags:
-    - operant
-    - ai-agents
-    - slack
-    - msteams
 
 services:
   # ---- state (starts first) ----
